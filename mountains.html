@@ -30,10 +30,15 @@
   nav .spacer { margin-left: auto; }
 
   .page-title {
-    font-size: 28px; font-weight: 500; color: #222;
-    margin-bottom: 8px; letter-spacing: -0.01em;
+    font-size: 44px; font-weight: 500; color: #222;
+    margin-bottom: 18px; letter-spacing: -0.02em;
+    text-align: center; line-height: 1.1;
   }
-  .page-intro { font-size: 16px; color: #666; margin-bottom: 48px; }
+  .page-intro { font-size: 16px; color: #666; margin-bottom: 14px; }
+  .page-prelude {
+    font-size: 15px; color: #888; font-style: italic;
+    margin-bottom: 36px;
+  }
 
   .mountain { margin-bottom: 56px; }
   .mountain img { width: 100%; display: block; border-radius: 4px; }
@@ -42,6 +47,64 @@
   }
   .mountain .desc {
     font-size: 15px; color: #666; margin-top: 4px; font-style: italic;
+  }
+
+  /* Interactive distribution mountain */
+  .mountain-viz {
+    margin-bottom: 24px;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mountain-viz-header { margin-bottom: 10px; text-align: center; }
+  .mountain-viz-title {
+    font-family: 'Caveat', cursive;
+    font-size: 26px; font-weight: 700; color: #5C342A;
+    line-height: 1; display: inline-block;
+    transform: rotate(-1deg);
+  }
+  .shock-btn {
+    font-family: 'Libre Franklin', sans-serif;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    background: none; border: none; padding: 0;
+    color: #A04030; cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+  .shock-btn:hover { text-decoration: underline; }
+  .shock-btn:disabled { opacity: 0.4; cursor: default; text-decoration: none; }
+  .mountain-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    cursor: crosshair;
+    overflow: visible;
+  }
+  .mountain-svg path { transition: opacity 0.15s ease; }
+  .peak-handle {
+    fill: #FFFFF8;
+    stroke: #3B2A24;
+    stroke-width: 1.5;
+    opacity: 0.35;
+    transition: opacity 0.2s ease;
+    cursor: grab;
+  }
+  .mountain-viz:hover .peak-handle { opacity: 1; }
+  .peak-handle.dragging { cursor: grabbing; opacity: 1; }
+  .peak-hit { fill: transparent; cursor: grab; }
+  .mountain-viz-hint {
+    font-family: 'Libre Franklin', sans-serif;
+    font-size: 11px;
+    color: #aaa;
+    text-align: center;
+    margin-top: 6px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .mountain-viz-hint kbd {
+    font-family: inherit; font-size: 10px;
+    background: #f0ece4; border-radius: 3px;
+    padding: 1px 5px; color: #777;
   }
 </style>
 </head>
@@ -55,8 +118,25 @@
     <a href="index.html#contact">Contact</a>
   </nav>
 
-  <div class="page-title">Mountains</div>
-  <p class="page-intro">A collection of photographs from places I've been.</p>
+  <div class="page-title">My life through mountains</div>
+  <p class="page-intro">
+    The obligatory photos on an economist's webpage. In my defence, reaching
+    high altitudes really is my favourite way to clear my head. But first:
+    a macro mountain, for those lucid enough to see the parallel (or those
+    too steeped in economics to miss it).
+  </p>
+
+  <div class="mountain-viz">
+    <svg class="mountain-svg" viewBox="0 0 800 280" preserveAspectRatio="xMidYMid meet">
+      <g id="mountain-bars" fill="#3B2A24"></g>
+      <g id="peak-hits"></g>
+      <g id="peak-handles"></g>
+    </svg>
+    <div class="mountain-viz-hint">
+      Drag a peak · Click empty space to add · <kbd>shift</kbd>+click to remove
+      · <button id="shock-btn" class="shock-btn">↯ income shock</button>
+    </div>
+  </div>
 
   <div class="mountain">
     <img src="mountain_pictures/fitzroy.JPG" alt="">
@@ -197,5 +277,245 @@
   </div>
 
 </div>
+
+<script>
+(function() {
+  const SVG_W = 800, SVG_H = 280;
+  const X_MIN = -10, X_MAX = 10;
+  const Y_BASELINE = SVG_H - 4;
+  const Y_TOP = 18;
+  const MAX_Y = 0.45;                       // canvas y-axis caps the PDF at this height
+  const SQRT_2PI = Math.sqrt(2 * Math.PI);
+  const HANDLE_R = 5;
+  const HIT_R = 22;
+  const W_MIN = 0.02, W_MAX = 0.92;         // bounds on a single component's normalized weight
+  const NUM_BARS = 56;
+  const BAR_GAP = 1.5;
+  const SHOCK_SHIFT = 2.0;                  // permanent leftward shift in μ after a shock
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+
+  const xToPx = x => ((x - X_MIN) / (X_MAX - X_MIN)) * SVG_W;
+  const pxToX = px => X_MIN + (px / SVG_W) * (X_MAX - X_MIN);
+  const yToPx = y => Y_BASELINE - (y / MAX_Y) * (Y_BASELINE - Y_TOP);
+  const pxToY = py => Math.max(0, MAX_Y * (Y_BASELINE - py) / (Y_BASELINE - Y_TOP));
+
+  // Gaussian mixture: each component has weight w (sums to 1), mean mu, std sigma.
+  // Heights vary because of differing sigma (narrow ⇒ tall, wide ⇒ flat).
+  let peaks = [
+    { mu: -5.5, sigma: 1.5,  w: 0.13 },     // wide left foothill
+    { mu: -1.5, sigma: 0.5,  w: 0.40 },     // sharp main peak
+    { mu: 1.8,  sigma: 0.85, w: 0.27 },     // medium secondary peak
+    { mu: 5.0,  sigma: 1.7,  w: 0.20 }      // gentle right hill
+  ];
+  let dragging = null;
+
+  const svg = document.querySelector('.mountain-svg');
+  const barsG = document.getElementById('mountain-bars');
+  const handlesG = document.getElementById('peak-handles');
+  const hitsG = document.getElementById('peak-hits');
+
+  function normalizeWeights() {
+    const s = peaks.reduce((a, p) => a + p.w, 0);
+    if (s > 0) peaks.forEach(p => p.w /= s);
+  }
+  normalizeWeights();
+
+  function pdfAt(x) {
+    let y = 0;
+    for (const p of peaks) {
+      const z = (x - p.mu) / p.sigma;
+      y += p.w / (p.sigma * SQRT_2PI) * Math.exp(-0.5 * z * z);
+    }
+    return y;
+  }
+  const peakHeight = p => p.w / (p.sigma * SQRT_2PI);
+
+  // pdfAt with optional shock progress (shifts μ leftward as shock advances + visual ripple)
+  function pdfEval(x, shockT) {
+    const shift = shockT != null ? -SHOCK_SHIFT * easeOutCubic(shockT) : 0;
+    let y = 0;
+    for (const p of peaks) {
+      const z = (x - (p.mu + shift)) / p.sigma;
+      y += p.w / (p.sigma * SQRT_2PI) * Math.exp(-0.5 * z * z);
+    }
+    if (shockT != null) {
+      const waveX = X_MIN - 3 + shockT * (X_MAX - X_MIN + 6);
+      const dx = x - waveX;
+      const env = Math.exp(-(dx * dx) / 5);
+      const ripple = Math.cos(dx * 1.6) * env * 0.45 * (1 - 0.3 * shockT);
+      y *= (1 + ripple);
+    }
+    return y;
+  }
+
+  function renderBars(shockT) {
+    const stride = SVG_W / NUM_BARS;
+    const range = Y_BASELINE - Y_TOP;
+    let html = '';
+    for (let i = 0; i < NUM_BARS; i++) {
+      const xCenter = X_MIN + ((i + 0.5) / NUM_BARS) * (X_MAX - X_MIN);
+      let y = pdfEval(xCenter, shockT);
+      y = Math.max(0, Math.min(MAX_Y, y));
+      const h = (y / MAX_Y) * range;
+      if (h < 0.4) continue;
+      const bx = i * stride + BAR_GAP / 2;
+      const by = Y_BASELINE - h;
+      html += `<rect x="${bx.toFixed(2)}" y="${by.toFixed(2)}" width="${(stride - BAR_GAP).toFixed(2)}" height="${h.toFixed(2)}"/>`;
+    }
+    barsG.innerHTML = html;
+  }
+
+  function render() {
+    renderBars();
+    handlesG.innerHTML = '';
+    hitsG.innerHTML = '';
+    peaks.forEach((p, i) => {
+      const cx = xToPx(p.mu);
+      const cy = yToPx(Math.min(peakHeight(p), MAX_Y));
+      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      hit.setAttribute('cx', cx);
+      hit.setAttribute('cy', cy);
+      hit.setAttribute('r', HIT_R);
+      hit.setAttribute('class', 'peak-hit');
+      hit.dataset.idx = i;
+      hitsG.appendChild(hit);
+
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', cx);
+      dot.setAttribute('cy', cy);
+      dot.setAttribute('r', HANDLE_R);
+      dot.setAttribute('class', 'peak-handle' + (dragging === i ? ' dragging' : ''));
+      handlesG.appendChild(dot);
+    });
+  }
+
+  function svgPoint(clientX, clientY) {
+    const r = svg.getBoundingClientRect();
+    return {
+      x: (clientX - r.left) * SVG_W / r.width,
+      y: (clientY - r.top) * SVG_H / r.height
+    };
+  }
+
+  function nearestPeak(px, py) {
+    let best = -1, bestD = HIT_R;
+    peaks.forEach((p, i) => {
+      const dx = px - xToPx(p.mu);
+      const dy = py - yToPx(Math.min(peakHeight(p), MAX_Y));
+      const d = Math.hypot(dx, dy);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  function startInteraction(px, py, shiftKey) {
+    const idx = nearestPeak(px, py);
+    if (shiftKey && idx >= 0 && peaks.length > 1) {
+      peaks.splice(idx, 1);
+      normalizeWeights();
+      render();
+      return false;
+    }
+    if (idx >= 0) {
+      dragging = idx;
+      render();
+      return true;
+    }
+    // Add a new peak. Pick sigma based on click y so a high click ⇒ sharper peak.
+    const targetH = Math.max(0.04, pxToY(py));
+    const newSigma = Math.max(0.4, Math.min(2.5, 0.18 / targetH + 0.4));
+    peaks.push({ mu: pxToX(px), sigma: newSigma, w: 0.25 });
+    normalizeWeights();
+    render();
+    return false;
+  }
+
+  function updateDrag(px, py) {
+    if (dragging === null) return;
+    const i = dragging;
+    peaks[i].mu = Math.max(X_MIN, Math.min(X_MAX, pxToX(px)));
+
+    // Vertical drag changes this component's weight so its peak tracks the cursor.
+    // Solve w_i' such that, after renormalization, w_i' / (σ_i √(2π)) ≈ targetH.
+    // Let t be the target normalized weight; with others summing to S_other,
+    //   w_i_raw = t · S_other / (1 − t)
+    const targetH = pxToY(py);
+    const otherSum = peaks.reduce((s, p, j) => (j !== i ? s + p.w : s), 0);
+    let t = targetH * peaks[i].sigma * SQRT_2PI;
+    t = Math.max(W_MIN, Math.min(W_MAX, t));
+    peaks[i].w = t * otherSum / (1 - t);
+    normalizeWeights();
+    render();
+  }
+
+  // Income-shock animation: peak μ's slide leftward (eased) while a wave packet
+  // visibly sweeps through the bars. After the animation, the leftward shift is
+  // committed permanently — the whole distribution has moved.
+  let shockState = null;
+  const shockBtn = document.getElementById('shock-btn');
+
+  function animateShock(now) {
+    if (!shockState) return;
+    const t = (now - shockState.start) / shockState.duration;
+    if (t >= 1) {
+      peaks.forEach(p => { p.mu = Math.max(X_MIN + 0.5, p.mu - SHOCK_SHIFT); });
+      shockState = null;
+      shockBtn.disabled = false;
+      handlesG.style.opacity = '';
+      hitsG.style.pointerEvents = '';
+      render();
+      return;
+    }
+    renderBars(t);
+    requestAnimationFrame(animateShock);
+  }
+
+  function triggerShock() {
+    if (shockState) return;
+    shockBtn.disabled = true;
+    handlesG.style.opacity = '0';
+    hitsG.style.pointerEvents = 'none';
+    shockState = { start: performance.now(), duration: 1800 };
+    requestAnimationFrame(animateShock);
+  }
+
+  shockBtn.addEventListener('click', triggerShock);
+
+  // Mouse
+  svg.addEventListener('mousedown', e => {
+    const { x, y } = svgPoint(e.clientX, e.clientY);
+    if (startInteraction(x, y, e.shiftKey)) e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (dragging === null) return;
+    const { x, y } = svgPoint(e.clientX, e.clientY);
+    updateDrag(x, y);
+  });
+  window.addEventListener('mouseup', () => {
+    if (dragging !== null) { dragging = null; render(); }
+  });
+
+  // Touch
+  svg.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const { x, y } = svgPoint(t.clientX, t.clientY);
+    if (startInteraction(x, y, false)) e.preventDefault();
+  }, { passive: false });
+  window.addEventListener('touchmove', e => {
+    if (dragging === null || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const { x, y } = svgPoint(t.clientX, t.clientY);
+    updateDrag(x, y);
+    e.preventDefault();
+  }, { passive: false });
+  window.addEventListener('touchend', () => {
+    if (dragging !== null) { dragging = null; render(); }
+  });
+
+  render();
+})();
+</script>
+
 </body>
 </html>
