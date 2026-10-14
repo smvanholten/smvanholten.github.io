@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://sven.vanholten.com/sitemap.xml
+Sitemap: https://svenvanholten.com/sitemap.xml
